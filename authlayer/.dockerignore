@@ -1,0 +1,29 @@
+# Never send secrets or local data to the build context.
+.env
+.env.*
+!.env.example
+
+# Build output and local databases.
+target/
+*.db
+*.db-shm
+*.db-wal
+data/
+
+# VCS / editor noise.
+.git/
+.gitignore
+.idea/
+.vscode/
+
+# Files not needed inside the image.
+deploy/
+docs/
+scripts/
+e2e/
+.github/
+README.md
+PROJECT_STATE.md
+SECURITY_REVIEW*.md
+Dockerfile
+docker-compose.yml

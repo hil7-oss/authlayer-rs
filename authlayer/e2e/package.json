@@ -1,0 +1,17 @@
+{
+  "name": "authlayer-browser-e2e",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Real Chrome + CDP virtual-authenticator browser E2E harness for AuthLayer",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node passkey.mjs",
+    "check": "node --check passkey.mjs"
+  },
+  "dependencies": {
+    "playwright-core": "^1.65.1"
+  }
+}

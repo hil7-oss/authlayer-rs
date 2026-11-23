@@ -1,0 +1,11 @@
+/target/
+*.db
+*.db-shm
+*.db-wal
+.env
+.env.*
+!.env.example
+e2e/node_modules/
+e2e/*.db
+e2e/*.db-shm
+e2e/*.db-wal

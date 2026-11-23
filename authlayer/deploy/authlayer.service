@@ -1,0 +1,55 @@
+[Unit]
+Description=AuthLayer passwordless authentication server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=authlayer
+Group=authlayer
+WorkingDirectory=/var/lib/authlayer
+# All configuration and secrets are supplied through this root-owned file
+# (mode 0600). Do not put tokens or passwords directly in this unit.
+# For production behind host-local Caddy, the env file should include:
+#   COOKIE_NAME=__Host-al_session
+#   TRUST_PROXY=true
+#   TRUSTED_PROXY_CIDRS=127.0.0.1/32
+EnvironmentFile=/etc/authlayer/authlayer.env
+ExecStart=/usr/local/bin/authlayer
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+
+# SQLite database lives here. systemd creates it with the right owner/mode.
+StateDirectory=authlayer
+StateDirectoryMode=0700
+UMask=0077
+
+LimitNOFILE=65536
+
+# Basic hardening. The service only needs to accept TCP connections and write
+# to its state directory.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ReadWritePaths=/var/lib/authlayer
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RemoveIPC=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

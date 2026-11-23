@@ -1,0 +1,22 @@
+# Rust build output
+/target/
+/authlayer/target/
+
+# Local databases and WAL files
+*.db
+*.db-wal
+*.db-shm
+
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+
+# Editor/OS noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Node dependencies for the E2E harness
+/authlayer/e2e/node_modules/

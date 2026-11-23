@@ -1,0 +1,138 @@
+# AuthLayer + Caddy for a single Ubuntu 24.04 host.
+#
+#   cp .env.example .env    # fill SMTP, OTP_SECRET, domain, admin token
+#   docker compose up -d --build
+#
+# Only Caddy publishes ports. The authlayer service is reachable only on the
+# dedicated Compose network at authlayer:8080.
+#
+# Production defaults are smtp email and a trusted Caddy-only network. The app
+# is fail-closed: `docker compose config` still parses when SMTP_HOST/SMTP_FROM
+# or OTP_SECRET are unset, but the authlayer container exits at startup.
+#
+# Compose reads ./.env automatically for ${VAR} interpolation.
+
+name: authlayer
+
+services:
+  authlayer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: authlayer:0.1.0
+    restart: unless-stopped
+    user: "10001:10001"
+    environment:
+      # Container-internal listener. Do not change unless you also change the
+      # Caddy upstream and the HEALTHCHECK target.
+      BIND_ADDR: "0.0.0.0:8080"
+      APP_URL: "${APP_URL:-https://auth.example.com}"
+      RP_ID: "${RP_ID:-auth.example.com}"
+      ALLOW_RP_ID_PARENT: "${ALLOW_RP_ID_PARENT:-false}"
+      RP_NAME: "${RP_NAME:-AuthLayer}"
+      DATABASE_URL: "sqlite:///data/authlayer.db?mode=rwc"
+      # The root filesystem is read-only; keep SQLite scratch files on the
+      # writable /tmp tmpfs instead of /var/tmp.
+      TMPDIR: "/tmp"
+      SQLITE_TMPDIR: "/tmp"
+      # Required. Empty or unset is a hard Compose error; generate with:
+      #   openssl rand -hex 32
+      OTP_SECRET: "${OTP_SECRET:?OTP_SECRET is required; set it in .env (openssl rand -hex 32)}"
+      ADMIN_TOKEN: "${ADMIN_TOKEN:-}"
+      COOKIE_NAME: "${COOKIE_NAME:-__Host-al_session}"
+      COOKIE_SECURE: "${COOKIE_SECURE:-true}"
+      SESSION_TTL_DAYS: "${SESSION_TTL_DAYS:-7}"
+      SESSION_IDLE_HOURS: "${SESSION_IDLE_HOURS:-24}"
+      OTP_TTL_MINUTES: "${OTP_TTL_MINUTES:-10}"
+      RECOVERY_CODE_TTL_DAYS: "${RECOVERY_CODE_TTL_DAYS:-365}"
+      # DEV_MODE is explicit. Compose binds 0.0.0.0, so enabling DEV_MODE here
+      # also requires ALLOW_INSECURE_DEV_MODE=true; never do that publicly.
+      DEV_MODE: "${DEV_MODE:-false}"
+      ALLOW_INSECURE_DEV_MODE: "${ALLOW_INSECURE_DEV_MODE:-false}"
+      ALLOW_OUTBOX_WITHOUT_DEV: "${ALLOW_OUTBOX_WITHOUT_DEV:-false}"
+      # Production default is smtp. SMTP values are optional at the Compose
+      # level; the app itself fails closed while SMTP_HOST/SMTP_FROM are empty.
+      EMAIL_PROVIDER: "${EMAIL_PROVIDER:-smtp}"
+      SMTP_HOST: "${SMTP_HOST:-}"
+      SMTP_PORT: "${SMTP_PORT:-587}"
+      SMTP_USERNAME: "${SMTP_USERNAME:-}"
+      SMTP_PASSWORD: "${SMTP_PASSWORD:-}"
+      SMTP_FROM: "${SMTP_FROM:-}"
+      SMTP_TLS: "${SMTP_TLS:-required}"
+      # The app trusts forwarding headers only from this CIDR. Keep it equal to
+      # the authlayer_internal subnet below. Caddy overwrites X-Forwarded-For
+      # and X-Real-IP before proxying. Do not publish port 8080: Docker's
+      # gateway is inside this CIDR.
+      TRUST_PROXY: "${TRUST_PROXY:-true}"
+      TRUSTED_PROXY_CIDRS: "${TRUSTED_PROXY_CIDRS:-172.28.0.0/16}"
+      RUST_LOG: "${RUST_LOG:-authlayer=info,tower_http=info}"
+    volumes:
+      - authlayer_data:/data
+    expose:
+      - "8080"
+    networks:
+      - authlayer_internal
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - "/tmp:size=16m,mode=1777"
+    mem_limit: 256m
+    pids_limit: 100
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp" # HTTP/3
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      authlayer:
+        condition: service_healthy
+    networks:
+      - authlayer_internal
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    mem_limit: 128m
+    pids_limit: 100
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  authlayer_data:
+  caddy_data:
+  caddy_config:
+
+networks:
+  # Dedicated bridge: only AuthLayer and Caddy belong here. The subnet must
+  # match TRUSTED_PROXY_CIDRS. If it conflicts with a VPN, change both values.
+  authlayer_internal:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16

@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#060a12">
+  <meta name="description" content="AuthLayer — self-hosted passwordless sign-in with passkeys and one-time email codes.">
+  <meta name="robots" content="noindex, nofollow">
+  <title>AuthLayer — No passwords. Ever.</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%23070c17'/%3E%3Cpath d='M16 5.5l7.5 3v5.8c0 4.6-3.1 7.8-7.5 9.2-4.4-1.4-7.5-4.6-7.5-9.2V8.5l7.5-3z' fill='none' stroke='%237dd3fc' stroke-width='1.8' stroke-linejoin='round'/%3E%3Ccircle cx='16' cy='13.7' r='2.1' fill='none' stroke='%23a5b4fc' stroke-width='1.6'/%3E%3Cpath d='M16 15.8v3.1' stroke='%23a5b4fc' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#app">Skip to content</a>
+  <div class="backdrop" aria-hidden="true"></div>
+
+  <header class="site-header">
+    <div class="wordmark" aria-label="AuthLayer">
+      <span class="wordmark-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 3l7 3v5.2c0 4.4-3 7.5-7 9-4-1.5-7-4.6-7-9V6l7-3z"/>
+          <circle cx="12" cy="11.4" r="1.9"/>
+          <path d="M12 13.3v2.6"/>
+        </svg>
+      </span>
+      <span class="wordmark-text">AuthLayer</span>
+    </div>
+    <p class="tagline"><span class="tagline-dot" aria-hidden="true"></span>No passwords. Ever.</p>
+  </header>
+
+  <main id="app" class="app" tabindex="-1">
+    <div class="auth-wrap">
+      <section class="card auth-card" aria-busy="true" aria-label="Loading AuthLayer">
+        <div class="boot">
+          <span class="spinner spinner-lg" aria-hidden="true"></span>
+          <p>Checking your session…</p>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <span>AuthLayer</span>
+    <span class="footer-dot" aria-hidden="true">•</span>
+    <span>Self-hosted passwordless sign-in</span>
+  </footer>
+
+  <noscript>
+    <div class="noscript" role="alert">
+      AuthLayer needs JavaScript to sign in. Please enable JavaScript and reload this page.
+    </div>
+  </noscript>
+
+  <div id="stepup-status" class="stepup-status" role="status" aria-live="polite" hidden>
+    <span class="spinner" aria-hidden="true"></span>
+    <div class="stepup-status-copy">
+      <strong>Confirm with your passkey</strong>
+      <span>Use your fingerprint, face, screen lock, or security key to continue.</span>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>

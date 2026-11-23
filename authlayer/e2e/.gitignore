@@ -1,0 +1,7 @@
+node_modules/
+e2e-*.db
+e2e-*.db-wal
+e2e-*.db-shm
+e2e-*.db-journal
+.e2e-server-*.log
+*.log
