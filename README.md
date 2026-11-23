@@ -1,201 +1,184 @@
 # AuthLayer
 
-**Слой доступа без ручного ввода паролей + библиотека/шлюз для Linux Ubuntu.**
+**Self-hosted passwordless authentication in Rust. Passkeys + email OTP. No passwords.**
 
-> Это проектная документация, а не готовый пакет. Здесь описано, что строить, что брать готовое и где находятся принципиальные ограничения.
+[![CI](https://github.com/hil7-oss/authlayer-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/hil7-oss/authlayer-rs/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-1.100%2B-orange.svg)](https://www.rust-lang.org/)
+[![Status](https://img.shields.io/badge/status-conditional%20release-yellow.svg)](authlayer/SECURITY_REVIEW_ROUND3.md)
 
----
+AuthLayer is an open-source authentication server that replaces passwords with **WebAuthn passkeys** and **one-time email codes**. It ships as a single Rust binary with SQLite, a browser UI, SMTP delivery, recovery codes, step-up verification, and Docker deployment.
 
-## Главное уточнение
-
-Для **нового приложения** пароль не нужно доставлять или шифровать — его нужно **убрать совсем**.
-
-Пользователь вводит email → получает одноразовый код/ссылку → создаёт passkey (Face ID/Touch ID/Windows Hello) → дальше входит по биометрии. Пароля нет ни в базе, ни в письме, ни в голове пользователя. Библиотека делает это автоматически.
-
-`sealed delivery` (зашифрованный пароль в письме) и SSH-сертификаты остаются, но это **отдельные модули** для legacy-сайтов и инфраструктуры, а не ядро продукта.
-
-Подробно: [docs/PRODUCT.md](docs/PRODUCT.md).
+> **Status:** `v0.1.0` is a **conditional self-hosted release**, not a public SaaS or a drop-in replacement for every legacy app. Read [Security](#security) before exposing it to the internet.
 
 ---
 
-## Коротко: что верно в идее, а что нет
+## Why AuthLayer
 
-### 1. «Пароль захеширован, а на доверенном устройстве разхешируется»
+- **No password database.** There is no password column, no hash to crack, and no "forgot password" flow.
+- **Phishing-resistant login.** Passkeys are bound to the origin and the private key stays in the device's TPM / Secure Enclave / Keystore.
+- **Email is only a bootstrap.** A one-time code gets the user started; sensitive actions require a fresh passkey confirmation.
+- **Self-hosted by default.** SQLite, one binary, Docker Compose, Caddy, systemd. No vendor account required.
+- **Recovery is designed in.** Eight one-time recovery codes, expiry, and old-credential revocation.
+- **Operational controls.** Step-up, session revocation, sign-out-everywhere, admin sessions, audit events, rate limits.
 
-Так не бывает. Хеш — необратимая функция: из `sha256(password)` нельзя получить `password`. Если сервер пришлёт хеш, а клиент «разхеширует» его, значит, сервер хранит обратимый секрет — это только хуже.
+## Features
 
-**Правильный эквивалент:**
+| Area | What is implemented |
+|---|---|
+| **Sign-up / sign-in** | Email OTP (6 digits, 10 min, one-time, max 5 attempts) |
+| **Passkeys** | WebAuthn registration, login, add another passkey |
+| **Sessions** | 7-day absolute, 24-hour idle, `HttpOnly`, `SameSite=Strict`, `__Host-`, passkey binding |
+| **Step-up** | Fresh passkey confirmation for add-passkey, recovery regeneration, passkey revoke, revoke-all |
+| **Recovery** | 8 context-bound codes, 365-day TTL, atomic use, old sessions/passkeys revoked |
+| **Admin** | `/admin/login`, DB-backed admin sessions, 1-hour TTL, rate limit, audit |
+| **Email** | SMTP via `lettre`, TLS required in production, dev outbox for local testing |
+| **Deployment** | Dockerfile, Compose + Caddy, systemd, `.env.example` |
+| **Hardening** | Origin enforcement, trusted-proxy CIDRs, no-store, WAL, cleanup, conflict-safe challenges |
+| **UI** | Responsive browser UI: email, passkeys, recovery, dashboard, sessions, sign-out-everywhere |
 
-- у доверенного устройства есть **приватный ключ**, который никогда не покидает устройство;
-- сервер **шифрует** секрет на **публичный ключ** устройства (HPKE/JWE);
-- письмо/сообщение в мессенджере несёт только шифротекст;
-- расшифровать может только устройство с приватным ключом;
-- вместо «разхеширования» устройство **подписывает** подтверждение, а сервер проверяет подпись.
+## Architecture
 
-Это даёт ровно то свойство, которое нужно: перехватил письмо — получил бесполезный набор байт.
-
-### 2. «Зашифровать куки и расшифровывать только тем, кому можно»
-
-Само по себе это не защищает. Кука — это **bearer-токен**: кто её украл, тот может её отправить. Шифрование скрывает содержимое, но не мешает повторному использованию.
-
-**Что реально защищает:**
-
-- `HttpOnly`, `Secure`, `SameSite`, префикс `__Host-`;
-- короткий срок жизни + ротация;
-- серверная сессия с возможностью отзыва;
-- **привязка к ключу устройства**: DPoP (RFC 9449) для API/CLI, DBSC для браузера, mTLS для enterprise;
-- WebAuthn/passkey для повторного подтверждения чувствительных действий.
-
-То есть куку нужно не «зашифровать и выдавать ключ после проверки», а **связать с устройством криптографически**. Проверка «имеешь ли ты право» должна быть подписью, а не выдачей ключа.
-
-### 3. «Библиотека, которую скачал на Ubuntu и вставил в любое приложение»
-
-Это реализуемо в двух режимах:
-
-| Режим | Как работает | Для чего |
-|---|---|---|
-| **SDK / middleware** | библиотека внутри приложения (Express, Fastify, Next.js, Django, FastAPI, Go) | свои приложения, полный контроль |
-| **Gateway / forward-auth** | отдельный сервис + Caddy/Nginx/Traefik перед приложением | «любое» приложение на своём сервере без изменения кода |
-
-Но есть честное ограничение: **серверная библиотека не может изменить чужой сайт**, к серверу которого у тебя нет доступа. Для чужих сайтов остаются только браузерное расширение/автозаполнение, SSO (если сайт его поддерживает) или PAM-брокер. «Любое приложение» = любое приложение **на твоём сервере**, а не любой сайт в интернете.
-
-### 4. «Пароль приходит на почту, но злоумышленнику с доступом к почте не подойдёт»
-
-Для самого секрета — да, если он зашифрован на ключ устройства. Но есть две лазейки, которые нужно закрыть отдельно:
-
-1. **Сброс пароля на самом целевом сайте.** Если у сайта есть «забыли пароль?» на твою почту, доступ к почте всё равно = захват аккаунта. Твой слой это не отменяет. Нужен отдельный email/алиас, passkey на почте, отключение сброса или отдельная политика.
-2. **Фишинг и подмена запроса.** Доступ к почте позволяет не украсть секрет, а подсунуть ссылку/запрос на подтверждение. Поэтому подтверждение должно показывать контекст (какой сайт, какой ресурс, какой IP, какое время) и требовать биометрию, а не клик по ссылке.
-
-### 5. «Сессия 7 дней»
-
-Нормально для **refresh-сессии**, но не для access-токена:
-
-- access token — 10–15 минут;
-- refresh — 7 дней, ротация, привязка к устройству;
-- абсолютный срок — 7 дней, потом повторный вход;
-- отзыв устройства — мгновенный;
-- чувствительные действия — повторный WebAuthn/biometric.
-
-### 6. Про Google Authenticator и TOTP
-
-TOTP — это **второй фактор**, а не замена пароля. Код живёт 30 секунд, но секрет (seed) постоянный и общий с сервером. Если сервер утёк — можно генерировать коды. Если код перехватили — можно успеть использовать. А синхронизация Google Authenticator через облако означает, что seed можно скопировать на другое устройство: это уже не строгая привязка к устройству.
-
-Что делать:
-
-- для своих систем — passkeys/WebAuthn, а не TOTP;
-- для legacy-сайтов, которые требуют TOTP, — хранить seed в брокере (зашифрованным) и генерировать код автоматически; это удобно, но это ещё один секрет, который нужно защищать;
-- не называть TOTP «паролем, который генерируется»: это одноразовый код второго фактора;
-- если нужны автообновляемые пароли для legacy — брокер может менять пароль сайта после каждого использования (если есть API/автоматизация), а не TOTP.
-
-### 7. Кто уже это делал
-
-Да, по частям:
-
-- **passkeys/WebAuthn** — Apple, Google, Microsoft, FIDO Alliance;
-- **push-подтверждение** — Duo, Okta Verify, Microsoft Authenticator, Authsignal;
-- **passwordless для legacy-приложений** — Keeper, 1Password, 1Kosmos, IamLogic, My1Login, CyberArk, Delinea (расширение + автозаполнение);
-- **SSH без паролей** — Teleport, Tailscale SSH, Smallstep, Vault SSH, Boundary;
-- **device-bound сессии** — Google DBSC (Chrome 146+ на Windows, macOS в rollout), Microsoft Token Protection, DPoP;
-- **sealed delivery / dynamic secrets** — HashiCorp Vault/OpenBao, Infisical, SOPS+age.
-
-Отдельного массового продукта «письмо с зашифрованным паролем, который расшифровывается только на доверенном устройстве и автоматически заполняется на любом чужом сайте» нет. Это композиция из нескольких слоёв. Рынок passwordless уже консолидирован (Clef → Twilio, KryptCo → Akamai, Stytch → Twilio в 2025), поэтому дифференциация — не в криптографии, а в интеграции, legacy-сайтах, SSH и UX.
-
----
-
-## Что строить
-
-**Не новую авторизацию с нуля, а слой над существующей:**
-
-```text
-┌─────────────────────────────────────────────────────────────┐
-│                    AuthLayer control plane                  │
-│  accounts · devices · sessions · policy · broker · audit    │
-└───────────────┬─────────────────────────────┬───────────────┘
-                │                             │
-      ┌─────────▼─────────┐         ┌─────────▼─────────┐
-      │ SDK / middleware  │         │ Gateway (Caddy/   │
-      │ в приложении      │         │ Nginx/Traefik)    │
-      └─────────┬─────────┘         └─────────┬─────────┘
-                │                             │
-      ┌─────────▼─────────┐         ┌─────────▼─────────┐
-      │ Своё приложение   │         │ Любое приложение  │
-      │                   │         │ на своём сервере  │
-      └───────────────────┘         └───────────────────┘
-
-      ┌───────────────────┐         ┌───────────────────┐
-      │ CLI/agent (SSH)   │         │ Browser extension │
-      │ короткие сертиф. │         │ legacy autofill   │
-      └───────────────────┘         └───────────────────┘
+```mermaid
+flowchart LR
+    U[Browser] -->|HTTPS| C[Caddy]
+    C -->|HTTP :8080| A[AuthLayer\nRust + Axum]
+    A --> DB[(SQLite\n/data)]
+    A --> SMTP[SMTP provider]
+    A -->|OTP code| E[Email]
+    U -->|WebAuthn| A
 ```
 
-### Три уровня, которые нужно различать
+The app is a single process. SQLite, in-memory WebAuthn challenges, and the rate limiter make v0.1 a **single-instance** deployment. Postgres/Redis and multi-instance support are planned for v0.2.
 
-| Уровень | Что делаем | Пароль существует? |
-|---|---|---|
-| **Свои приложения** | passkeys/WebAuthn + серверные сессии + DPoP/DBSC | нет |
-| **Свои серверы (SSH)** | короткоживущие SSH-сертификаты через step-ca/Teleport | нет |
-| **Чужие legacy-сайты** | брокер паролей + расширение + автозаполнение | да, но не вводится руками и выдаётся по одному разу |
+## Quick start (local development)
 
-Последний уровень — это честно **PAM/credential broker**, а не «магия без пароля». Для сайтов, которые поддерживают passkeys, третий уровень не нужен.
-
----
-
-## Документы
-
-- [docs/PRODUCT.md](docs/PRODUCT.md) — главное видение: passwordless-аутентификация «из коробки», путь пользователя и разработчика, почему не нужна нейросеть в auth, MVP.
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — полная архитектура: компоненты, потоки, криптография, модель данных, API, threat model, деплой на Ubuntu.
-- [docs/SESSIONS-AND-COOKIES.md](docs/SESSIONS-AND-COOKIES.md) — почему шифрование кук само по себе не работает, и как сделать device-bound сессии (DPoP/DBSC), 7 дней, ротация, отзыв.
-- [docs/MARKET.md](docs/MARKET.md) — кто уже что сделал, какие стандарты и готовые компоненты брать, build vs buy.
-- [docs/MVP.md](docs/MVP.md) — пошаговый план MVP: SSH без паролей → passkeys → legacy autofill, с критериями приёмки.
-
----
-
-## Главные принципы
-
-1. **Не хранить пароли, которые можно не хранить.** Для своих систем — passkeys и сертификаты.
-2. **Не отправлять plaintext-секреты в email/мессенджер.** Только шифротекст на ключ устройства.
-3. **Не делать email фактором доверия.** Email — только транспорт уведомления. Восстановление и добавление устройства — через существующее устройство или recovery key.
-4. **Не выдавать ключи расшифровки клиенту.** Клиент доказывает владение ключом подписью; сервер проверяет.
-5. **Не обещать passwordless для чужих сайтов.** Там будет брокер паролей; это нормально, если честно назвать.
-6. **Не строить своё.** WebAuthn, OAuth/OIDC, CA, HPKE/JWE, KMS, reverse proxy — брать готовое; своё писать только оркестрацию, UX и политику.
-
----
-
-## Статус
-
-Репозиторий больше не «только документы»: в `authlayer/` лежит рабочий Rust-сервер v0.1.
-
-Что уже работает:
-
-- `cargo check`, `cargo test`, `cargo build` — проходят;
-- живой HTTP smoke-тест — **15/15**;
-- email OTP через dev outbox;
-- WebAuthn passkey registration/login API;
-- серверные сессии 7 дней;
-- recovery-коды;
-- read-only admin;
-- Dockerfile, Compose, Caddy, systemd;
-- smoke-тесты.
-
-Что ещё не готово: внешний SMTP-провайдер (локальный Mailpit-тест проходит), независимый внешний аудит, тесты на реальных устройствах (Windows Hello/Touch ID/Android/iOS/YubiKey), часть P1-hardening. Docker-образ собран и проверен: контейнер healthy, `/healthz` 200. Подробности — в [PROJECT_STATE.md](PROJECT_STATE.md) и [AGENT_LOG.md](AGENT_LOG.md).
-
-Безопасность: три внутренних review. Round 3 вердикт: **conditional go** только для свежего single-instance за Caddy с `DEV_MODE=false`, HTTPS/`__Host-`, SMTP TLS, точным `RP_ID`, сильными секретами, admin off/restricted, миграцией 0003 и edge CAPTCHA/лимитами. **Не для открытой публичной регистрации и не для апгрейда без миграции.** Отчёты: `authlayer/SECURITY_REVIEW_ROUND3.md`. Это не заменяет внешний аудит.
-
-Лицензия: Apache-2.0 (`LICENSE`).
-
-Быстрый запуск:
+Prerequisites: Rust 1.100+ and a shell. `localhost` is treated as a secure context by browsers, so WebAuthn works over HTTP locally.
 
 ```powershell
-cd authlayer
+git clone https://github.com/hil7-oss/authlayer-rs.git
+cd authlayer-rs/authlayer
+
 $env:APP_URL="http://localhost:8080"
 $env:RP_ID="localhost"
+$env:BIND_ADDR="127.0.0.1:8080"
 $env:DATABASE_URL="sqlite://authlayer.db?mode=rwc"
 $env:DEV_MODE="true"
+$env:EMAIL_PROVIDER="outbox"
 $env:OTP_SECRET="dev-only-secret-0123456789abcdef0123456789"
 $env:COOKIE_SECURE="false"
+$env:COOKIE_NAME="al_session"
+
 cargo run
 ```
 
-Открыть `http://localhost:8080`, код письма — на `http://localhost:8080/dev/outbox`.
+Open `http://localhost:8080`. In dev/outbox mode, the email code is available at `http://localhost:8080/dev/outbox`.
 
-Дальше: frontend, браузерный passkey E2E, SMTP, security review, Docker build, `v0.1.0`.
+> Never use `DEV_MODE=true` or `EMAIL_PROVIDER=outbox` in production. The app refuses to start in unsafe combinations unless explicit `ALLOW_*` escape hatches are set.
+
+## Production deployment (Docker + Caddy)
+
+```bash
+git clone https://github.com/hil7-oss/authlayer-rs.git
+cd authlayer-rs/authlayer
+
+cp .env.example .env
+# Edit .env: real domain, APP_URL, RP_ID, OTP_SECRET, SMTP_*, ADMIN_TOKEN
+# APP_URL must be https://...; RP_ID must equal the APP_URL host.
+# Generate OTP_SECRET: openssl rand -hex 32
+
+docker compose up -d --build
+```
+
+The provided Compose file:
+
+- exposes only Caddy (80/443), not the app port;
+- runs the app as non-root with a read-only root filesystem, `/data` volume, `cap_drop: ALL`, and resource limits;
+- uses a dedicated `172.28.0.0/16` network and trusted-proxy CIDRs;
+- fails closed if SMTP, `OTP_SECRET`, or secure cookies are misconfigured.
+
+Full deployment details: [`authlayer/deploy/README.md`](authlayer/deploy/README.md).
+
+## Security
+
+The project has been through three internal reviews. The current verdict is in [`authlayer/SECURITY_REVIEW_ROUND3.md`](authlayer/SECURITY_REVIEW_ROUND3.md).
+
+**Conditional GO** only for a **fresh, single-instance** deployment behind the provided Caddy, with:
+
+- `DEV_MODE=false`, HTTPS, `COOKIE_SECURE=true`, `__Host-al_session`;
+- `EMAIL_PROVIDER=smtp` and `SMTP_TLS=required`;
+- exact `RP_ID` matching `APP_URL` host;
+- strong random `OTP_SECRET` and `ADMIN_TOKEN`;
+- admin disabled or restricted at the network layer;
+- migration `0003` applied with a backup;
+- edge CAPTCHA / rate limits if signup is open to the public.
+
+**Not approved for:**
+
+- unrestricted public signup without CAPTCHA/abuse controls;
+- high-value or real-money accounts without an external audit;
+- upgrades from a pre-hardening database without migration and counter backfill;
+- sharing the app port directly or running it without TLS.
+
+### Security model in one screen
+
+- Passwordless by construction: no password storage, no password reset.
+- OTPs are HMAC-bound to user, purpose, OTP id, and expiry; wrong attempts are limited.
+- Passkey assertions require user verification; counter regressions are rejected for device-bound credentials.
+- Sessions are 256-bit opaque tokens, stored as SHA-256 hashes, bound to a passkey, revocable individually or all at once.
+- Recovery codes are context-bound, expiring, one-time; successful recovery revokes old sessions/passkeys.
+- Admin uses DB-backed sessions and a separate `al_admin` cookie; logout revokes the DB row.
+- Production state-changing requests require `Origin`; WebAuthn ceremonies are bound to an `al_ceremony` cookie.
+
+## Verified
+
+| Check | Result |
+|---|---|
+| `cargo fmt` / `check` / `clippy -D warnings` / `test` / `build` | pass |
+| HTTP smoke (`scripts/smoke.mjs`) | **26/26** |
+| Browser E2E (Chrome + CDP virtual authenticator) | **18/18** |
+| Docker read-only + limits | **healthy**, `/healthz` 200 |
+| SMTP delivery via local Mailpit | **PASS** (OTP email → code → verify) |
+| Production Origin policy | missing/foreign `Origin` → 403; exact → 200 |
+
+## Documentation
+
+- [`authlayer/README.md`](authlayer/README.md) — Russian quickstart, env contract, API, limitations.
+- [`authlayer/docs/IMPLEMENTATION.md`](authlayer/docs/IMPLEMENTATION.md) — architecture, flows, data model, security trade-offs.
+- [`PROJECT_STATE.md`](PROJECT_STATE.md) — exact current state, verified results, remaining risks.
+- [`CHANGELOG.md`](CHANGELOG.md) — v0.1.0 scope.
+- [`authlayer/SECURITY_REVIEW_ROUND3.md`](authlayer/SECURITY_REVIEW_ROUND3.md) — current security verdict.
+- [`SECURITY.md`](SECURITY.md) — vulnerability disclosure policy.
+
+## Status and limitations
+
+v0.1.0 is a **working, tested foundation**, not a finished global standard.
+
+Known gaps:
+
+- external SMTP provider not live-tested (local Mailpit passes);
+- real devices (Windows Hello, Touch ID, Android, iOS, YubiKey) not in CI;
+- no independent external audit;
+- sessions are still bearer tokens without DPoP/DBSC;
+- no CAPTCHA/global abuse budget for open signup;
+- recovery has no delay/second-channel step-up;
+- upgrade path needs counter backfill or passkey re-registration;
+- rotating `ADMIN_TOKEN` does not revoke existing admin sessions;
+- single-instance SQLite only.
+
+Planned for v0.2: Postgres, DPoP/DBSC, CAPTCHA/abuse controls, recovery delay, admin token rotation revocation, counter backfill, real-device matrix, external audit.
+
+## Contributing
+
+Issues and pull requests are welcome. Please read [`SECURITY.md`](SECURITY.md) before reporting a vulnerability. For changes, run:
+
+```bash
+cd authlayer
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test
+```
+
+## License
+
+Apache-2.0. See [`LICENSE`](LICENSE).
