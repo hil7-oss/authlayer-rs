@@ -9,6 +9,8 @@
 
 AuthLayer is an open-source authentication server that replaces passwords with **WebAuthn passkeys** and **one-time email codes**. It ships as a single Rust binary with SQLite, a browser UI, SMTP delivery, recovery codes, step-up verification, and Docker deployment.
 
+![AuthLayer — self-hosted passwordless authentication](authlayer/docs/assets/social-preview.png)
+
 > **Status:** `v0.1.0` is a **conditional self-hosted release**, not a public SaaS or a drop-in replacement for every legacy app. Read [Security](#security) before exposing it to the internet.
 
 ---
